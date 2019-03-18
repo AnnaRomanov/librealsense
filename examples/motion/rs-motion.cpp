@@ -4,6 +4,8 @@
 #include <mutex>
 #include "example.hpp"          // Include short list of convenience functions for rendering
 #include <cstring>
+#include <chrono>
+#include <thread>
 
 struct short3
 {
@@ -11,6 +13,13 @@ struct short3
 };
 
 #include "d435.h"
+#include "t265.h"
+
+enum {
+    ERROR,
+    IMU,
+    POSE,
+};
 
 void draw_axes()
 {
@@ -67,28 +76,21 @@ class camera_renderer
     std::vector<short3> indexes;
 public:
     // Initialize renderer with data needed to draw the camera
-    camera_renderer()
+    camera_renderer(int stream)
     {
+        if (stream == IMU)
         uncompress_d435_obj(positions, normals, indexes);
+        else
+        {
+            uncompress_t265_obj(positions, normals, indexes);
+        }
     }
 
-    // Takes the calculated angle as input and rotates the 3D camera model accordignly
-    void render_camera(float3 theta)
+    void draw()
     {
-
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE);
-
-        glPushMatrix();
-        // Set the rotation, converting theta to degrees
-        glRotatef(theta.x * 180 / PI, 0, 0, -1);
-        glRotatef(theta.y * 180 / PI, 0, -1, 0);
-        glRotatef((theta.z - PI / 2) * 180 / PI, -1, 0, 0);
-
         draw_axes();
-
         // Scale camera drawing
-        glScalef(0.035, 0.035, 0.035);
+        glScalef(0.01, 0.01, 0.01);
 
         glBegin(GL_TRIANGLES);
         // Draw the camera
@@ -100,13 +102,40 @@ public:
             glColor4f(0.05f, 0.05f, 0.05f, 0.3f);
         }
         glEnd();
+    }
+
+    // Takes the calculated angle as input and rotates the 3D camera model accordignly
+    void render_camera (float3 theta) //(float r[16])
+    {
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+
+        glPushMatrix();
+        // Set the rotation, converting theta to degrees
+        glRotatef(theta.x * 180 / PI, 0, 0, -1);
+        glRotatef(theta.y * 180 / PI, 0, -1, 0);
+        glRotatef((theta.z - PI / 2) * 180 / PI, -1, 0, 0);
+
+        draw();
 
         glPopMatrix();
-
         glDisable(GL_BLEND);
         glFlush();
     }
 
+    void render_camera (float r[16])
+    {
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_ONE, GL_ONE);
+       // Set the rotation
+        glMultMatrixf(r);
+        glRotatef(180, 0, 0, 1);
+        draw();
+        glDisable(GL_BLEND);
+        glFlush();
+    }
 };
 
 class rotation_estimator
@@ -188,12 +217,24 @@ public:
     }
 };
 
+void calc_transform(rs2_pose& pose_data, float mat[16])
+{
+    auto q = pose_data.rotation;
+    auto t = pose_data.translation;
+    // Set the matrix as column-major for convenient work with OpenGL
+    mat[0] = (1 - 2 * q.y*q.y - 2 * q.z*q.z); mat[4] = (2 * q.x*q.y - 2 * q.z*q.w);     mat[8] = (2 * q.x*q.z + 2 * q.y*q.w);      mat[12] = t.x;
+    mat[1] = (2 * q.x*q.y + 2 * q.z*q.w);     mat[5] = (1 - 2 * q.x*q.x - 2 * q.z*q.z); mat[9] = (2 * q.y*q.z - 2 * q.x*q.w);      mat[13] = t.y;
+    mat[2] = (2 * q.x*q.z - 2 * q.y*q.w);     mat[6] = (2 * q.y*q.z + 2 * q.x*q.w);     mat[10] = (1 - 2 * q.x*q.x - 2 * q.y*q.y); mat[14] = t.z;
+    mat[3] = 0.0f;                            mat[7] = 0.0f;                            mat[11] = 0.0f;                            mat[15] = 1.0f;
+}
 
-bool check_imu_is_supported()
+int check_supported_stream()
 {
     bool found_gyro = false;
     bool found_accel = false;
     rs2::context ctx;
+    ctx.query_devices();
+    std::this_thread::sleep_for(std::chrono::seconds(7));
     for (auto dev : ctx.query_devices())
     {
         // The same device should support gyro and accel
@@ -203,6 +244,9 @@ bool check_imu_is_supported()
         {
             for (auto profile : sensor.get_stream_profiles())
             {
+                if (profile.stream_type() == RS2_STREAM_POSE)
+                    return POSE;
+
                 if (profile.stream_type() == RS2_STREAM_GYRO)
                     found_gyro = true;
 
@@ -211,20 +255,20 @@ bool check_imu_is_supported()
             }
         }
         if (found_gyro && found_accel)
-            break;
+            return IMU;
     }
-    return found_gyro && found_accel;
+    return ERROR;
 }
 
 int main(int argc, char * argv[]) try
 {
-    // Before running the example, check that a device supporting IMU is connected
-    if (!check_imu_is_supported())
+    // Before running the example, check that a device supporting IMU or pose is connected
+    int stream = check_supported_stream();
+    if (stream == ERROR)
     {
-        std::cerr << "Device supporting IMU (D435i) not found";
+        std::cerr << "Device supporting IMU (D435i) or pose stream (T265) not found";
         return EXIT_FAILURE;
     }
-
     // Initialize window for rendering
     window app(1280, 720, "RealSense Motion Example");
     // Construct an object to manage view state
@@ -238,47 +282,77 @@ int main(int argc, char * argv[]) try
     rs2::config cfg;
 
     // Add streams of gyro and accelerometer to configuration
-    cfg.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
-    cfg.enable_stream(RS2_STREAM_GYRO, RS2_FORMAT_MOTION_XYZ32F);
-
+    if (stream == IMU)
+    {
+        cfg.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
+        cfg.enable_stream(RS2_STREAM_GYRO, RS2_FORMAT_MOTION_XYZ32F);
+    }
+    else
+    {
+        cfg.enable_stream(RS2_STREAM_POSE, RS2_FORMAT_6DOF);
+        // Start pipeline with chosen configuration
+        pipe.start(cfg);
+    }
+    
     // Declare object for rendering camera motion
-    camera_renderer camera;
+    camera_renderer camera(stream);
     // Declare object that handles camera pose calculations
     rotation_estimator algo;
 
     // Start streaming with the given configuration;
     // Note that since we only allow IMU streams, only single frames are produced
-    auto profile = pipe.start(cfg, [&](rs2::frame frame)
+    if (stream == IMU)
     {
-        // Cast the frame that arrived to motion frame
-        auto motion = frame.as<rs2::motion_frame>();
-        // If casting succeeded and the arrived frame is from gyro stream
-        if (motion && motion.get_profile().stream_type() == RS2_STREAM_GYRO && motion.get_profile().format() == RS2_FORMAT_MOTION_XYZ32F)
+        auto profile = pipe.start(cfg, [&](rs2::frame frame)
         {
-            // Get the timestamp of the current frame
-            double ts = motion.get_timestamp();
-            // Get gyro measures
-            rs2_vector gyro_data = motion.get_motion_data();
-            // Call function that computes the angle of motion based on the retrieved measures
-            algo.process_gyro(gyro_data, ts);
-        }
-        // If casting succeeded and the arrived frame is from accelerometer stream
-        if (motion && motion.get_profile().stream_type() == RS2_STREAM_ACCEL && motion.get_profile().format() == RS2_FORMAT_MOTION_XYZ32F)
-        {
-            // Get accelerometer measures
-            rs2_vector accel_data = motion.get_motion_data();
-            // Call function that computes the angle of motion based on the retrieved measures
-            algo.process_accel(accel_data);
-        }
-    });
+            // Cast the frame that arrived to motion frame
+            auto motion = frame.as<rs2::motion_frame>();
+            // If casting succeeded and the arrived frame is from gyro stream
+            if (motion && motion.get_profile().stream_type() == RS2_STREAM_GYRO && motion.get_profile().format() == RS2_FORMAT_MOTION_XYZ32F)
+            {
+                // Get the timestamp of the current frame
+                double ts = motion.get_timestamp();
+                // Get gyro measures
+                rs2_vector gyro_data = motion.get_motion_data();
+                // Call function that computes the angle of motion based on the retrieved measures
+                algo.process_gyro(gyro_data, ts);
+            }
+            // If casting succeeded and the arrived frame is from accelerometer stream
+            if (motion && motion.get_profile().stream_type() == RS2_STREAM_ACCEL && motion.get_profile().format() == RS2_FORMAT_MOTION_XYZ32F)
+            {
+                // Get accelerometer measures
+                rs2_vector accel_data = motion.get_motion_data();
+                // Call function that computes the angle of motion based on the retrieved measures
+                algo.process_accel(accel_data);
+            }
+        });
+    }
 
     // Main loop
     while (app)
     {
-        // Configure scene, draw floor, handle manipultation by the user etc.
-        render_scene(app_state);
-        // Draw the camera according to the computed theta
-        camera.render_camera(algo.get_theta());
+        if (stream == IMU)
+        {
+            // Configure scene, draw floor, handle manipultation by the user etc.
+            render_scene(app_state);
+            // Draw the camera according to the computed theta
+            camera.render_camera(algo.get_theta());
+        }
+        else
+        {
+            // if T265, use pose
+            auto frames = pipe.wait_for_frames();
+            // Get a frame from the pose stream
+            auto f = frames.first_or_default(RS2_STREAM_POSE);
+            auto pose_data = f.as<rs2::pose_frame>().get_pose_data();
+            float r[16];
+            // Calculate current transformation matrix
+            calc_transform(pose_data, r);
+            render_scene(app_state);
+            camera.render_camera(r);
+        }
+
+
     }
     // Stop the pipeline
     pipe.stop();
