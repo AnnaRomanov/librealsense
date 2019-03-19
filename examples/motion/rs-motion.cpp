@@ -79,11 +79,9 @@ public:
     camera_renderer(int stream)
     {
         if (stream == IMU)
-        uncompress_d435_obj(positions, normals, indexes);
+            uncompress_d435_obj(positions, normals, indexes);
         else
-        {
             uncompress_t265_obj(positions, normals, indexes);
-        }
     }
 
     void draw()
@@ -105,19 +103,16 @@ public:
     }
 
     // Takes the calculated angle as input and rotates the 3D camera model accordignly
-    void render_camera (float3 theta) //(float r[16])
+    void render_camera (float3 theta)
     {
 
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-
-        glPushMatrix();
         // Set the rotation, converting theta to degrees
         glRotatef(theta.x * 180 / PI, 0, 0, -1);
         glRotatef(theta.y * 180 / PI, 0, -1, 0);
         glRotatef((theta.z - PI / 2) * 180 / PI, -1, 0, 0);
         draw();
-        glPopMatrix();
         glDisable(GL_BLEND);
         glFlush();
     }
@@ -127,9 +122,9 @@ public:
     {
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-        // Set the rotation
+        glRotatef(180, 1, 0, 0);
+        // Set the transformation
         glMultMatrixf(r);
-        glRotatef(180, 0, 0, 1);
         draw();
         glDisable(GL_BLEND);
         glFlush();
@@ -220,10 +215,10 @@ void calc_transform(rs2_pose& pose_data, float mat[16])
     auto q = pose_data.rotation;
     auto t = pose_data.translation;
     // Set the matrix as column-major for convenient work with OpenGL
-    mat[0] = (1 - 2 * q.y*q.y - 2 * q.z*q.z); mat[4] = (2 * q.x*q.y - 2 * q.z*q.w);     mat[8] = (2 * q.x*q.z + 2 * q.y*q.w);      mat[12] = t.x;
-    mat[1] = (2 * q.x*q.y + 2 * q.z*q.w);     mat[5] = (1 - 2 * q.x*q.x - 2 * q.z*q.z); mat[9] = (2 * q.y*q.z - 2 * q.x*q.w);      mat[13] = t.y;
-    mat[2] = (2 * q.x*q.z - 2 * q.y*q.w);     mat[6] = (2 * q.y*q.z + 2 * q.x*q.w);     mat[10] = (1 - 2 * q.x*q.x - 2 * q.y*q.y); mat[14] = t.z;
-    mat[3] = 0.0f;                            mat[7] = 0.0f;                            mat[11] = 0.0f;                            mat[15] = 1.0f;
+    mat[0] = -(1 - 2 * q.y*q.y - 2 * q.z*q.z); mat[4] = (2 * q.x*q.y - 2 * q.z*q.w);     mat[8] = -(2 * q.x*q.z + 2 * q.y*q.w);      mat[12] = t.x;
+    mat[1] = -(2 * q.x*q.y + 2 * q.z*q.w);     mat[5] = (1 - 2 * q.x*q.x - 2 * q.z*q.z); mat[9] = -(2 * q.y*q.z - 2 * q.x*q.w);      mat[13] = t.y;
+    mat[2] = -(2 * q.x*q.z - 2 * q.y*q.w);     mat[6] = (2 * q.y*q.z + 2 * q.x*q.w);     mat[10] = -(1 - 2 * q.x*q.x - 2 * q.y*q.y); mat[14] = t.z;
+    mat[3] = 0.0f;                             mat[7] = 0.0f;                            mat[11] = 0.0f;                             mat[15] = 1.0f;
 }
 
 int check_supported_stream()
@@ -350,8 +345,6 @@ int main(int argc, char * argv[]) try
             calc_transform(pose_data, r);
             camera.render_camera(r);
         }
-
-
     }
     // Stop the pipeline
     pipe.stop();
