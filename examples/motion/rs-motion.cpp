@@ -116,20 +116,18 @@ public:
         glRotatef(theta.x * 180 / PI, 0, 0, -1);
         glRotatef(theta.y * 180 / PI, 0, -1, 0);
         glRotatef((theta.z - PI / 2) * 180 / PI, -1, 0, 0);
-
         draw();
-
         glPopMatrix();
         glDisable(GL_BLEND);
         glFlush();
     }
 
+    // Takes a transformation matrix and applies it to the 3D camera model
     void render_camera (float r[16])
     {
-
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
-       // Set the rotation
+        // Set the rotation
         glMultMatrixf(r);
         glRotatef(180, 0, 0, 1);
         draw();
@@ -234,7 +232,7 @@ int check_supported_stream()
     bool found_accel = false;
     rs2::context ctx;
     ctx.query_devices();
-    std::this_thread::sleep_for(std::chrono::seconds(7));
+    std::this_thread::sleep_for(std::chrono::seconds(5));
     for (auto dev : ctx.query_devices())
     {
         // The same device should support gyro and accel
@@ -281,25 +279,26 @@ int main(int argc, char * argv[]) try
     // Create a configuration for configuring the pipeline with a non default profile
     rs2::config cfg;
 
-    // Add streams of gyro and accelerometer to configuration
     if (stream == IMU)
     {
+        // For D435i, add streams of gyro and accelerometer to configuration
         cfg.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
         cfg.enable_stream(RS2_STREAM_GYRO, RS2_FORMAT_MOTION_XYZ32F);
     }
     else
     {
+        // For T265, add pose stream
         cfg.enable_stream(RS2_STREAM_POSE, RS2_FORMAT_6DOF);
         // Start pipeline with chosen configuration
         pipe.start(cfg);
     }
     
-    // Declare object for rendering camera motion
+    // Declare object for rendering camera motion and initialize it with the available stream
     camera_renderer camera(stream);
-    // Declare object that handles camera pose calculations
+    // Declare object that handles camera pose calculations; We'll use it only for D435i, since T265 has built-in pose stream
     rotation_estimator algo;
 
-    // Start streaming with the given configuration;
+    // For D435i: start streaming with the given configuration;
     // Note that since we only allow IMU streams, only single frames are produced
     if (stream == IMU)
     {
@@ -331,10 +330,11 @@ int main(int argc, char * argv[]) try
     // Main loop
     while (app)
     {
+        // Configure scene, draw floor, handle manipultation by the user etc.
+        render_scene(app_state);
+
         if (stream == IMU)
         {
-            // Configure scene, draw floor, handle manipultation by the user etc.
-            render_scene(app_state);
             // Draw the camera according to the computed theta
             camera.render_camera(algo.get_theta());
         }
@@ -348,7 +348,6 @@ int main(int argc, char * argv[]) try
             float r[16];
             // Calculate current transformation matrix
             calc_transform(pose_data, r);
-            render_scene(app_state);
             camera.render_camera(r);
         }
 
