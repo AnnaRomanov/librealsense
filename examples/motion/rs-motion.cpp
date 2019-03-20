@@ -102,10 +102,9 @@ public:
         glEnd();
     }
 
-    // Takes the calculated angle as input and rotates the 3D camera model accordignly
+    // Takes rotation angle as input and rotates the 3D camera model accordignly (used for D435i)
     void render_camera (float3 theta)
     {
-
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE);
         // Set the rotation, converting theta to degrees
@@ -117,7 +116,7 @@ public:
         glFlush();
     }
 
-    // Takes a transformation matrix and applies it to the 3D camera model
+    // Takes a transformation matrix and applies it to the 3D camera model (used for T265)
     void render_camera (float r[16])
     {
         glEnable(GL_BLEND);
@@ -131,6 +130,7 @@ public:
     }
 };
 
+// Class for calculating rotation angle of the D435i device, note that T265 has built-in pose stream and therefore this class is not needed
 class rotation_estimator
 {
     // theta is the angle of camera rotation in x, y and z components
@@ -210,16 +210,19 @@ public:
     }
 };
 
+
+// For T265, we can calculate transformation matrix using pose data
 void calc_transform(rs2_pose& pose_data, float mat[16])
 {
     auto q = pose_data.rotation;
     auto t = pose_data.translation;
-    // Set the matrix as column-major for convenient work with OpenGL
+    // Set the matrix as column-major for convenient work with OpenGL, rotate 180 degrees in y axia (negating 1st and 3rd columns)
     mat[0] = -(1 - 2 * q.y*q.y - 2 * q.z*q.z); mat[4] = (2 * q.x*q.y - 2 * q.z*q.w);     mat[8] = -(2 * q.x*q.z + 2 * q.y*q.w);      mat[12] = t.x;
     mat[1] = -(2 * q.x*q.y + 2 * q.z*q.w);     mat[5] = (1 - 2 * q.x*q.x - 2 * q.z*q.z); mat[9] = -(2 * q.y*q.z - 2 * q.x*q.w);      mat[13] = t.y;
     mat[2] = -(2 * q.x*q.z - 2 * q.y*q.w);     mat[6] = (2 * q.y*q.z + 2 * q.x*q.w);     mat[10] = -(1 - 2 * q.x*q.x - 2 * q.y*q.y); mat[14] = t.z;
     mat[3] = 0.0f;                             mat[7] = 0.0f;                            mat[11] = 0.0f;                             mat[15] = 1.0f;
 }
+
 
 int check_supported_stream()
 {
@@ -238,7 +241,7 @@ int check_supported_stream()
             for (auto profile : sensor.get_stream_profiles())
             {
                 if (profile.stream_type() == RS2_STREAM_POSE)
-                    return POSE;
+                   return POSE;
 
                 if (profile.stream_type() == RS2_STREAM_GYRO)
                     found_gyro = true;
@@ -273,30 +276,21 @@ int main(int argc, char * argv[]) try
     rs2::pipeline pipe;
     // Create a configuration for configuring the pipeline with a non default profile
     rs2::config cfg;
+    // Declare object for rendering camera motion and initialize it with the available stream
+    camera_renderer camera(stream);
 
+    // D435i
     if (stream == IMU)
     {
+        // Declare object that handles camera pose calculations; We'll use it only for D435i, since T265 has built-in pose stream
+        rotation_estimator algo;
+
         // For D435i, add streams of gyro and accelerometer to configuration
         cfg.enable_stream(RS2_STREAM_ACCEL, RS2_FORMAT_MOTION_XYZ32F);
         cfg.enable_stream(RS2_STREAM_GYRO, RS2_FORMAT_MOTION_XYZ32F);
-    }
-    else
-    {
-        // For T265, add pose stream
-        cfg.enable_stream(RS2_STREAM_POSE, RS2_FORMAT_6DOF);
-        // Start pipeline with chosen configuration
-        pipe.start(cfg);
-    }
-    
-    // Declare object for rendering camera motion and initialize it with the available stream
-    camera_renderer camera(stream);
-    // Declare object that handles camera pose calculations; We'll use it only for D435i, since T265 has built-in pose stream
-    rotation_estimator algo;
 
-    // For D435i: start streaming with the given configuration;
-    // Note that since we only allow IMU streams, only single frames are produced
-    if (stream == IMU)
-    {
+        // start streaming with the given configuration;
+        // Note that since we only allow IMU streams, only single frames are produced
         auto profile = pipe.start(cfg, [&](rs2::frame frame)
         {
             // Cast the frame that arrived to motion frame
@@ -320,22 +314,25 @@ int main(int argc, char * argv[]) try
                 algo.process_accel(accel_data);
             }
         });
-    }
-
-    // Main loop
-    while (app)
-    {
-        // Configure scene, draw floor, handle manipultation by the user etc.
-        render_scene(app_state);
-
-        if (stream == IMU)
+        // Main loop
+        while (app)
         {
+            // Configure scene, draw floor, handle manipultation by the user etc.
+            render_scene(app_state);
             // Draw the camera according to the computed theta
             camera.render_camera(algo.get_theta());
         }
-        else
+    }
+    else // T265
+    {
+        // Add pose stream (available for T265)
+        cfg.enable_stream(RS2_STREAM_POSE, RS2_FORMAT_6DOF);
+        // Start pipeline with chosen configuration
+        pipe.start(cfg);
+
+        // Main loop
+        while (app)
         {
-            // if T265, use pose
             auto frames = pipe.wait_for_frames();
             // Get a frame from the pose stream
             auto f = frames.first_or_default(RS2_STREAM_POSE);
@@ -343,9 +340,12 @@ int main(int argc, char * argv[]) try
             float r[16];
             // Calculate current transformation matrix
             calc_transform(pose_data, r);
+            // Configure scene, draw floor, handle manipultation by the user etc.
+            render_scene(app_state);
             camera.render_camera(r);
         }
     }
+
     // Stop the pipeline
     pipe.stop();
 
